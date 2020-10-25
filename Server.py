@@ -1,26 +1,20 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Sep 16 17:16:19 2020
 
-@author: chippy
-"""
 
 import socket 
-import sqlite3
-import datetime
 from threading import Thread 
+import sqlite3
+import paho.mqtt.client as mqtt
 
-connection = sqlite3.connect("Mytab.db", check_same_thread=False)
-server_conn = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+thread_process_list=list()
+connection = sqlite3.connect("MyDb.db", check_same_thread=False)
+tlreadList = [] 
+server = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 
-ip_port = ("127.0.0.1",8080)
-connection = connection.cursor()
-
-thread_list=list()
+c= connection.cursor()
 
 
-class client(Thread): 
+#Multithread
+class ClientThread(Thread): 
  
     def __init__(self,ip,port): 
         Thread.__init__(self) 
@@ -28,71 +22,132 @@ class client(Thread):
         self.port = port 
  
     def run(self): 
-       server_conn.listen(4) 
-       (conn,(ip,port)) = server_conn.accept() 
+       server.listen(4) 
+       (conn, (ip,port)) = server.accept() 
+       
        while True : 
             data = conn.recv(2048)
             msg = data.decode()
-            message = eval(msg) 
-            dataStore(message,ip,port)
+            dt = eval(msg) 
+            print(dt)
+            dataProcess(dt,ip,port)
+
+
             if not data: 
                 break
             conn.send(data) 
  
-
-def create_table():
-#CREATING NEW TABLE USING SQLITE
+class PubSubThread(Thread):
+    def __init__(self,topic):
+        Thread.__init__(self)
+        self.topic = topic
+    def run(self):
+        client = mqtt.Client('Chippy')
+        client.on_message = on_message  
+        client.connect("broker.hivemq.com")
+        client.subscribe('topic/mem_request')
+        client.subscribe("topic/cpu_request")
+        
+        client.loop_forever() 
+        
+def on_message(client,userdata,message):
+     
     
-    connection.execute("CREATE TABLE IF NOT EXISTS CpuInfo (DateTime TEXT, Key TEXT, Value REAL)")
+    
+        
+    if(str(message.topic)=="topic/mem_request" ):
+        print("topic/mem_request")
+   
+        try:
+            query = "Select * from MyDb Where Key = 'MEM' Order by id DESC LIMIT 10"
+            print(query)
+            
+            datas = c.execute(query)
+        except sqlite3.Error as error:
+            print(error)
+        myList = []
+        for d in datas:
+            myList.append(d[2])
+        print(str(myList))
+        
+        
+        client.publish("topic/mem_reply",str(myList))
+        
+    elif(str(message.topic)=="topic/cpu_request" ):
+        print("topic/cpu_request")
+        try:
+            query = "Select * from MyDb Where Key = 'CPU' Order by id DESC LIMIT 10"
+            print(query)
+            
+            datas = c.execute(query)
+        except sqlite3.Error as error:
+            print(error)
+        myList = []
+        for d in datas:
+            print(d)
+            myList.append(d[2])
+        print(str(myList))
+        
+        
+        
+        client.publish("topic/cpu_reply",str(myList))
+    
 
-def dataStore(message,ip,port):
-    print(message)
-    key_value = message['Key']
-    val = message['Value']
-    if(key_value == 'CPU_Usage' ):
-            if(float(val > 30.0)):
-                val_list = list()
-                val_list.append(str(datetime.datetime.now()))
-                val_list.append("CPU_Usage")
-                val_list.append(val)
-                print("CPU Usage is more than 30%")
+  
+  
+
+    
+    
+   
+    
+   
+
+    
+    
+def dataProcess(dt,ip,port):
+    if(dt['Key']=='CPU'):
+            if(float(dt['Value']>30.0)):
+                valueList = list()
+                valueList.append(dt['Key'])
+                valueList.append(dt['Value'])
+                print("CPU Usage more than 30%")
                 try:
-                    connection.execute("Insert into CpuInfo (DateTime, Key, Value ) VALUES (?,?,?)",tuple(val_list))
-                    val_list.clear()
-                    print(" CPU Usage greater than 30% is inserted")
+                    c.execute("Insert into MyDb ( Key, Value ) VALUES (?,?)",tuple(valueList))
+                    valueList.clear()
+                    connection.commit()
+                    print("Inserted CPU Usage")
                 except sqlite3.Error as error:
                     print(error)
-    elif(key_value == 'Virtual_Memory'):
-        if(float(val>40.0)):
-            val_list = list()
-            val_list.append(str(datetime.datetime.now()))
-            val_list.append("Virtual_Memory")
-            val_list.append(val)
-            print("Memory Usage is more than 40%")
+    elif(dt['Key']=='MEM'):
+        if(float(dt['Value']>40.0)):
+            valueList = list()
+            valueList.append(dt['Key'])
+            valueList.append(dt['Value'])
+            print("Memory Usage more than 40%")
             try:
-                connection.execute("Insert into CpuInfo (DateTime, Key, Value ) VALUES (?,?,?)",tuple(val_list))
-                val_list.clear()
-                print(" Memory Usage greater than 40% is inserted")
+                c.execute("Insert into MyDb ( Key, Value ) VALUES (?,?)",tuple(valueList))
+                valueList.clear()
+                connection.commit()
+                print("Inserted Memory Usage")
             except sqlite3.Error as error:
                 print(error)
-            
-def main_function():
- 
-    create_table()
-    server_conn.bind(ip_port)
-    server_conn.listen(5) 
-    (conn, (ip,port)) = server_conn.accept() 
 
-    while True: 
-        message_recv = conn.recv(1024)
-        dt = eval(message_recv)
-        dataStore(dt,ip,port)
-        newthread = client(ip,port)
-        newthread.start() 
-        thread_list.append(newthread) 
-     
-    for i in thread_list: 
-        i.join()      
+   
 
 if __name__ =="__main__":
-         main_function()
+    c.execute("CREATE TABLE IF NOT EXISTS MyDb (id INTEGER PRIMARY KEY AUTOINCREMENT,Key TEXT ,Value REAL)")
+    server.bind( ("127.0.0.1",8080))
+    server.listen(4) 
+    (conn, (ip,port)) = server.accept() 
+    tlreadList.append(PubSubThread("topic/cpu_request").start())
+    while 1: 
+        message_recv = conn.recv(1024)
+        dt = eval(message_recv)
+        dataProcess(dt,ip,port)
+
+        newthread = ClientThread(ip,port)
+        newthread.start() 
+        tlreadList.append(newthread) 
+     
+    for t in tlreadList: 
+        t.join()
